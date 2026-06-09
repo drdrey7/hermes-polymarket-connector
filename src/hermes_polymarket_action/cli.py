@@ -5,17 +5,19 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from .config import ActionConfig
-from .models import OrderRequest, OrderPreview, Side
+from .models import OrderRequest, OrderPreview, Side, OrderStatus
 from .validation import validate_market_token
 from .geoblock import check_geoblock
 from .risk import RiskEngine
 from .audit import audit_log, AuditEntry
-from .confirmation import verify_confirmation, mark_executing, mark_result
+from .confirmation import mark_result
+from .execution import ExecutionEngine
 from datetime import datetime
 
 console = Console()
 config = ActionConfig()
 risk_engine = RiskEngine(config)
+execution_engine = ExecutionEngine(config)
 
 
 @click.group()
@@ -87,9 +89,30 @@ def preview(market, token_id, outcome, side, size, price, slippage_bps, fee_bps)
         border_style="yellow",
     ))
 
-    # Risk gate warnings
+    # Gates status
     if not config.is_live_enabled():
         console.print("[dim]Live trading disabled. Set LIVE_TRADING=true and provide credentials to execute.[/dim]")
+    else:
+        # Quick validation preview
+        val = validate_market_token(req.market_slug, req.token_id, req.outcome)
+        risk = risk_engine.check(req)
+        geo = check_geoblock(config)
+        
+        gates = [
+            ("Live trading", config.live_trading),
+            ("Credentials", config.has_credentials()),
+            ("Confirmation", config.require_confirmation),
+            ("Market valid", val.valid),
+            ("Risk limits", risk.allowed),
+            ("Geoblock", geo.allowed),
+        ]
+        
+        gate_table = Table(title="Safety Gates", show_header=True)
+        gate_table.add_column("Gate", style="cyan")
+        gate_table.add_column("Status", style="white")
+        for name, passed in gates:
+            gate_table.add_row(name, "[green]PASS[/green]" if passed else "[red]BLOCK[/red]")
+        console.print(gate_table)
 
 
 @main.command()
@@ -97,74 +120,110 @@ def preview(market, token_id, outcome, side, size, price, slippage_bps, fee_bps)
 @click.option("--approve", is_flag=True, required=True, help="Explicit approval (required)")
 def execute(confirm_code, approve):
     """Execute a trade using confirmation code from preview."""
-    # Gate 1: Live trading enabled
-    if not config.is_live_enabled():
-        console.print("[red]Live trading disabled. Set LIVE_TRADING=true and provide credentials.[/red]")
-        return
-
-    # Gate 2: Verify confirmation
-    result = verify_confirmation(confirm_code, approve)
-    if not result.valid:
-        console.print(f"[red]Confirmation failed: {result.error}[/red]")
-        return
-
-    entry = result.entry
-    if entry is None:
-        console.print("[red]No audit entry found[/red]")
-        return
-
-    # Gate 3: Re-create order request from audit entry
-    req = OrderRequest(
-        market_slug=entry.market_slug,
-        token_id=entry.token_id,
-        outcome=entry.outcome,
-        side=Side(entry.side),
-        size_usd=entry.size_usd,
-        price=entry.price,
-    )
-
-    # Gate 4: Validation
-    val_result = validate_market_token(req.market_slug, req.token_id, req.outcome)
-    if not val_result.valid:
-        console.print(f"[red]Validation failed: {val_result.error}[/red]")
-        mark_result(confirm_code, "rejected", error=val_result.error)
-        return
-
-    # Gate 5: Geoblock
-    geo_result = check_geoblock(config)
-    if not geo_result.allowed:
-        console.print(f"[red]Geoblock failed: {geo_result.error}[/red]")
-        mark_result(confirm_code, "rejected", error=geo_result.error)
-        return
-
-    # Gate 6: Risk engine
-    risk_result = risk_engine.check(req)
-    if not risk_result.allowed:
-        console.print(f"[red]Risk check failed: {risk_result.error}[/red]")
-        for w in risk_result.warnings:
-            console.print(f"[yellow]Warning: {w}[/yellow]")
-        mark_result(confirm_code, "rejected", error=risk_result.error)
-        return
-    for w in risk_result.warnings:
-        console.print(f"[yellow]Warning: {w}[/yellow]")
-
-    # All gates passed - mark executing
-    console.print("[green]All checks passed. Executing trade...[/green]")
-    mark_executing(confirm_code, "pending-order-id")
-
-    # TODO: Actual execution via py-clob-client
-    # For now, simulate success
-    console.print("[yellow]Execution not yet implemented (placeholder)[/yellow]")
+    plan = execution_engine.build_execution_plan(confirm_code, approve)
     
-    # Simulate fill
-    mark_result(
-        confirm_code,
-        "filled",
-        tx_hash="0x" + "a" * 64,  # placeholder
-        filled_size_usd=req.size_usd,
-        avg_fill_price=req.price,
-    )
-    console.print("[green]Trade executed successfully (simulated)[/green]")
+    if not plan.allowed:
+        console.print(f"[red]BLOCKED: {plan.reason}[/red]")
+        return
+    
+    console.print("[green]All gates passed. Executing...[/green]")
+    
+    if not config.live_trading:
+        console.print("[yellow]DRY_RUN mode (LIVE_TRADING=false) — order not sent to network[/yellow]")
+        # Simulate dry-run result
+        mark_result(
+            confirm_code,
+            "dry_run",
+            filled_size_usd=plan.order_request.size_usd if plan.order_request else 0,
+            avg_fill_price=plan.order_request.price if plan.order_request else None,
+        )
+        console.print("[green]Dry-run complete (no network call)[/green]")
+        return
+    
+    # Real execution
+    result = execution_engine.execute_order(plan)
+    
+    if result.status in (OrderStatus.FILLED, OrderStatus.SUBMITTED):
+        console.print(f"[green]EXECUTED: order_id={result.order_id}, tx={result.tx_hash}[/green]")
+    else:
+        console.print(f"[red]FAILED: {result.error}[/red]")
+
+
+@main.command()
+@click.argument("order_id")
+@click.option("--confirm-code", help="Confirmation code from preview (optional)")
+def cancel(order_id, confirm_code):
+    """Cancel an open order."""
+    if not config.is_live_enabled():
+        console.print("[red]BLOCKED: Live trading disabled[/red]")
+        return
+    
+    if not config.live_trading:
+        console.print("[yellow]DRY_RUN mode (LIVE_TRADING=false) — cancel not sent to network[/yellow]")
+        return
+    
+    console.print(f"Cancelling order {order_id}...")
+    result = execution_engine.cancel_order(order_id, confirm_code)
+    
+    if result.status == OrderStatus.CANCELLED:
+        console.print(f"[green]CANCELLED: {order_id}[/green]")
+    else:
+        console.print(f"[red]CANCEL FAILED: {result.error}[/red]")
+
+
+@main.command()
+@click.option("--token", "token_id", required=True, help="CLOB token ID (0x...)")
+@click.option("--size", type=float, required=True, help="Size to close in USD")
+@click.option("--confirm-code", help="Confirmation code from preview (optional)")
+def close(token_id, size, confirm_code):
+    """Close (reduce) a position."""
+    if not config.is_live_enabled():
+        console.print("[red]BLOCKED: Live trading disabled[/red]")
+        return
+    
+    if not config.live_trading:
+        console.print("[yellow]DRY_RUN mode (LIVE_TRADING=false) — close not sent to network[/yellow]")
+        return
+    
+    console.print(f"Closing position for token {token_id[:12]}... (${size:.2f})")
+    result = execution_engine.close_position(token_id, size, confirm_code)
+    
+    if result.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
+        console.print(f"[green]CLOSE ORDER SUBMITTED: order_id={result.order_id}[/green]")
+    else:
+        console.print(f"[red]CLOSE FAILED: {result.error}[/red]")
+
+
+@main.command()
+def status():
+    """Show account/CLOB status."""
+    s = execution_engine.get_status()
+    
+    table = Table(title="Account Status", show_header=True)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="white")
+    
+    for k, v in s.items():
+        table.add_row(k.replace("_", " ").title(), str(v))
+    
+    console.print(table)
+    
+    # Show gates summary
+    console.print("\n[bold]Safety Gates[/bold]")
+    gates_table = Table(show_header=True)
+    gates_table.add_column("Gate", style="cyan")
+    gates_table.add_column("Status", style="white")
+    
+    gates = [
+        ("LIVE_TRADING", config.live_trading),
+        ("REQUIRE_CONFIRMATION", config.require_confirmation),
+        ("Credentials", config.has_credentials()),
+        ("Geoblock check", config.geoblock_check),
+    ]
+    
+    for name, passed in gates:
+        gates_table.add_row(name, "[green]ON[/green]" if passed else "[red]OFF[/red]")
+    console.print(gates_table)
 
 
 @main.command()
@@ -194,7 +253,7 @@ def audit():
             f"${entry.size_usd:.2f}",
             entry.confirmation_code or "-",
             entry.status,
-            entry.tx_hash[:12] + "..." if entry.tx_hash else "-",
+            (entry.tx_hash[:12] + "...") if entry.tx_hash else "-",
         )
     console.print(table)
 

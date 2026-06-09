@@ -13,14 +13,18 @@ class ActionConfig(BaseSettings):
         extra="ignore",
     )
 
-    # Required for live trading
+    # Required for live trading (never log these)
     private_key: Optional[str] = Field(default=None, alias="POLYMARKET_PRIVATE_KEY")
-    funder: Optional[str] = Field(default=None, alias="POLYMARKET_FUNDER")
+    funder_address: Optional[str] = Field(default=None, alias="POLYMARKET_FUNDER_ADDRESS")
+    signature_type: int = Field(default=3, alias="POLYMARKET_SIGNATURE_TYPE")
+    
+    # Optional proxy wallet
     proxy_wallet: Optional[str] = Field(default=None, alias="POLYMARKET_PROXY_WALLET")
 
     # RPC / API
     rpc_url: str = Field(default="https://polygon-rpc.com", alias="POLYMARKET_RPC_URL")
     clob_api_url: str = Field(default="https://clob.polymarket.com", alias="POLYMARKET_CLOB_API_URL")
+    chain_id: int = Field(default=137, alias="POLYMARKET_CHAIN_ID")
 
     # Live trading gates (ALL must be true for real execution)
     live_trading: bool = Field(default=False, alias="LIVE_TRADING")
@@ -31,10 +35,10 @@ class ActionConfig(BaseSettings):
     max_daily_usd: float = Field(default=500.0, alias="MAX_DAILY_USD")
     max_slippage_bps: int = Field(default=100, alias="MAX_SLIPPAGE_BPS")
     max_position_usd: float = Field(default=1000.0, alias="MAX_POSITION_USD")
+    max_open_orders: int = Field(default=50, alias="MAX_OPEN_ORDERS")
 
-    # Geoblock
+    # Geoblock - uses official Polymarket endpoint at runtime
     geoblock_check: bool = Field(default=True, alias="GEOBLOCK_CHECK")
-    allowed_countries: list[str] = Field(default=["PT", "US", "GB", "DE", "FR"], alias="ALLOWED_COUNTRIES")
 
     # Audit
     audit_log_path: Path = Field(default=Path("~/.hermes/polymarket-action/audit.log").expanduser(), alias="AUDIT_LOG_PATH")
@@ -48,11 +52,18 @@ class ActionConfig(BaseSettings):
             raise ValueError("Private key must be 66 chars (0x + 64 hex)")
         return v
 
-    @field_validator("funder", "proxy_wallet")
+    @field_validator("funder_address", "proxy_wallet")
     @classmethod
     def validate_address(cls, v: Optional[str]) -> Optional[str]:
         if v is not None and not (v.startswith("0x") and len(v) == 42):
             raise ValueError("Address must be 0x + 40 hex chars")
+        return v
+
+    @field_validator("signature_type")
+    @classmethod
+    def validate_signature_type(cls, v: int) -> int:
+        if v not in (1, 2, 3):
+            raise ValueError("Signature type must be 1, 2, or 3 (3 recommended for new users)")
         return v
 
     def is_live_enabled(self) -> bool:
@@ -60,5 +71,8 @@ class ActionConfig(BaseSettings):
             self.live_trading
             and self.require_confirmation
             and self.private_key is not None
-            and self.funder is not None
+            and self.funder_address is not None
         )
+
+    def has_credentials(self) -> bool:
+        return self.private_key is not None and self.funder_address is not None

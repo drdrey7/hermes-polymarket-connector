@@ -13,34 +13,60 @@ class GeoblockResult:
     error: Optional[str] = None
 
 
-def get_country_code() -> Optional[str]:
-    """Get country code from IP geolocation (ipapi.co)."""
-    try:
-        resp = httpx.get("https://ipapi.co/json/", timeout=5.0)
-        resp.raise_for_status()
-        data = resp.json()
-        country = data.get("country_code")
-        return str(country) if country is not None else None
-    except Exception:
-        return None
-
-
 def check_geoblock(config: Optional[ActionConfig] = None) -> GeoblockResult:
-    """Check if current location is allowed per config."""
+    """
+    Check geoblock using official Polymarket CLOB endpoint.
+    
+    Per Polymarket docs: https://docs.polymarket.com/api-reference/geoblock
+    GET /geoblock returns {"country": "...", "blocked": true/false}
+    
+    If GEOBLOCK_CHECK=false: bypass (not recommended for production)
+    If endpoint fails: block by default (fail-safe)
+    If blocked=true: block execution
+    """
     if config is None:
         config = ActionConfig()
+    
     if not config.geoblock_check:
-        return GeoblockResult(allowed=True, country_code="BYPASS", error="Geoblock check disabled")
-
-    country = get_country_code()
-    if country is None:
-        return GeoblockResult(allowed=False, error="Could not determine location")
-
-    if country in config.allowed_countries:
+        return GeoblockResult(
+            allowed=True, 
+            country_code="BYPASS", 
+            error="Geoblock check disabled (not recommended)"
+        )
+    
+    try:
+        resp = httpx.get(
+            f"{config.clob_api_url}/geoblock",
+            timeout=5.0,
+            headers={"Accept": "application/json"}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        
+        country = data.get("country", "unknown")
+        blocked = data.get("blocked", True)  # default to blocked if missing
+        
+        if blocked:
+            return GeoblockResult(
+                allowed=False,
+                country_code=country,
+                error=f"Geoblock active: trading blocked in {country}"
+            )
+        
         return GeoblockResult(allowed=True, country_code=country)
-
-    return GeoblockResult(
-        allowed=False,
-        country_code=country,
-        error=f"Country {country} not in allowed list: {config.allowed_countries}",
-    )
+        
+    except httpx.TimeoutException:
+        return GeoblockResult(
+            allowed=False,
+            error="Geoblock check timed out (blocked by default)"
+        )
+    except httpx.HTTPStatusError as e:
+        return GeoblockResult(
+            allowed=False,
+            error=f"Geoblock check failed with HTTP {e.response.status_code} (blocked by default)"
+        )
+    except Exception as e:
+        return GeoblockResult(
+            allowed=False,
+            error=f"Geoblock check failed: {type(e).__name__} (blocked by default)"
+        )

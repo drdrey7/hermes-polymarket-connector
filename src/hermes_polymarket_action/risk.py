@@ -17,9 +17,12 @@ class RiskCheckResult:
 
 
 class RiskEngine:
-    def __init__(self, config: Optional[ActionConfig] = None):
+    def __init__(self, config: Optional[ActionConfig] = None, daily_spent_path: Optional[Path] = None):
         self.config = config or ActionConfig()
-        self.daily_spent_path = Path("~/.hermes/polymarket-action/daily_spent.json").expanduser()
+        if daily_spent_path is None:
+            self.daily_spent_path = Path("~/.hermes/polymarket-action/daily_spent.json").expanduser()
+        else:
+            self.daily_spent_path = daily_spent_path
         self.daily_spent_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _load_daily_spent(self) -> dict[str, float]:

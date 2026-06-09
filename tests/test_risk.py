@@ -2,14 +2,32 @@
 from hermes_polymarket_action.risk import RiskEngine
 from hermes_polymarket_action.config import ActionConfig
 from hermes_polymarket_action.models import OrderRequest, Side
+import os
 
 
-def test_risk_engine_rejects_over_max_order(monkeypatch):
-    monkeypatch.setenv("MAX_ORDER_USD", "100")
-    monkeypatch.setenv("MAX_DAILY_USD", "500")
-    monkeypatch.setenv("MAX_SLIPPAGE_BPS", "100")
-    config = ActionConfig()
-    engine = RiskEngine(config)
+def make_config(**overrides):
+    defaults = {
+        "MAX_ORDER_USD": "100",
+        "MAX_DAILY_USD": "500",
+        "MAX_SLIPPAGE_BPS": "100",
+        "MAX_POSITION_USD": "1000",
+    }
+    for k, v in overrides.items():
+        defaults[k] = v
+    for k, v in defaults.items():
+        os.environ[k] = str(v)
+    return ActionConfig()
+
+
+def make_risk_engine(config, tmp_path):
+    """Create RiskEngine with isolated daily_spent file."""
+    daily_file = tmp_path / "daily_spent.json"
+    return RiskEngine(config, daily_spent_path=daily_file)
+
+
+def test_risk_engine_rejects_over_max_order(tmp_path):
+    config = make_config(MAX_ORDER_USD="100")
+    engine = make_risk_engine(config, tmp_path)
     req = OrderRequest(
         market_slug="test", token_id="0x" + "1"*64, outcome="Yes",
         side=Side.BUY, size_usd=150, price=0.5,
@@ -19,16 +37,9 @@ def test_risk_engine_rejects_over_max_order(monkeypatch):
     assert "exceeds max" in result.error
 
 
-def test_risk_engine_rejects_over_daily_limit(monkeypatch, tmp_path):
-    monkeypatch.setenv("MAX_ORDER_USD", "100")
-    monkeypatch.setenv("MAX_DAILY_USD", "100")
-    monkeypatch.setenv("MAX_SLIPPAGE_BPS", "100")
-    config = ActionConfig()
-    
-    # Use temp file for daily spent
-    daily_file = tmp_path / "daily_spent.json"
-    engine = RiskEngine(config)
-    engine.daily_spent_path = daily_file
+def test_risk_engine_rejects_over_daily_limit(tmp_path):
+    config = make_config(MAX_DAILY_USD="100")
+    engine = make_risk_engine(config, tmp_path)
     
     # First order uses up daily limit
     req1 = OrderRequest(
@@ -37,7 +48,7 @@ def test_risk_engine_rejects_over_daily_limit(monkeypatch, tmp_path):
     )
     result1 = engine.check(req1)
     assert result1.allowed is True
-    engine.record_fill(100)  # record fill
+    engine.record_fill(100)
     
     # Second order should exceed daily limit
     req2 = OrderRequest(
@@ -49,12 +60,9 @@ def test_risk_engine_rejects_over_daily_limit(monkeypatch, tmp_path):
     assert "Daily limit would be exceeded" in result2.error
 
 
-def test_risk_engine_allows_under_limits(monkeypatch):
-    monkeypatch.setenv("MAX_ORDER_USD", "100")
-    monkeypatch.setenv("MAX_DAILY_USD", "500")
-    monkeypatch.setenv("MAX_SLIPPAGE_BPS", "100")
-    config = ActionConfig()
-    engine = RiskEngine(config)
+def test_risk_engine_allows_under_limits(tmp_path):
+    config = make_config()
+    engine = make_risk_engine(config, tmp_path)
     req = OrderRequest(
         market_slug="test", token_id="0x" + "1"*64, outcome="Yes",
         side=Side.BUY, size_usd=50, price=0.5,
@@ -63,12 +71,9 @@ def test_risk_engine_allows_under_limits(monkeypatch):
     assert result.allowed is True
 
 
-def test_risk_engine_rejects_slippage_over_limit(monkeypatch):
-    monkeypatch.setenv("MAX_ORDER_USD", "100")
-    monkeypatch.setenv("MAX_DAILY_USD", "500")
-    monkeypatch.setenv("MAX_SLIPPAGE_BPS", "100")
-    config = ActionConfig()
-    engine = RiskEngine(config)
+def test_risk_engine_rejects_slippage_over_limit(tmp_path):
+    config = make_config(MAX_SLIPPAGE_BPS="100")
+    engine = make_risk_engine(config, tmp_path)
     req = OrderRequest(
         market_slug="test", token_id="0x" + "1"*64, outcome="Yes",
         side=Side.BUY, size_usd=50, price=0.5, slippage_bps=200,
@@ -78,13 +83,9 @@ def test_risk_engine_rejects_slippage_over_limit(monkeypatch):
     assert "Slippage" in result.error
 
 
-def test_risk_engine_warns_large_position(monkeypatch):
-    monkeypatch.setenv("MAX_ORDER_USD", "1000")
-    monkeypatch.setenv("MAX_DAILY_USD", "5000")
-    monkeypatch.setenv("MAX_SLIPPAGE_BPS", "100")
-    monkeypatch.setenv("MAX_POSITION_USD", "1000")
-    config = ActionConfig()
-    engine = RiskEngine(config)
+def test_risk_engine_warns_large_position(tmp_path):
+    config = make_config(MAX_ORDER_USD="1000", MAX_DAILY_USD="5000", MAX_POSITION_USD="1000")
+    engine = make_risk_engine(config, tmp_path)
     req = OrderRequest(
         market_slug="test", token_id="0x" + "1"*64, outcome="Yes",
         side=Side.BUY, size_usd=600, price=0.5,  # >50% of max_position_usd
