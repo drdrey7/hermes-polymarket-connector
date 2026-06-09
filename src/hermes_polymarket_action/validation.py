@@ -32,6 +32,9 @@ def validate_market_token(
     """
     Validate that token_id belongs to market_slug and matches outcome.
     Uses existing Hermes Polymarket skill for read-only lookup.
+    
+    FAIL CLOSED: If skill unavailable, validation fails.
+    This prevents trading on invalid/unknown markets.
     """
     # Basic format checks
     if not token_id.startswith("0x") or len(token_id) != 66:
@@ -41,12 +44,10 @@ def validate_market_token(
     market_data = asyncio.run(get_market_for_token(token_id))
 
     if market_data is None:
-        # Fallback: accept if user provided matching slug (dev mode)
+        # FAIL CLOSED: No skill integration → cannot validate
         return ValidationResult(
-            valid=True,
-            market_slug=market_slug,
-            token_id=token_id,
-            outcome=outcome,
+            valid=False,
+            error="Market validation unavailable: Hermes Polymarket skill not integrated. Cannot verify token/market/outcome."
         )
 
     if market_data.get("slug") != market_slug:

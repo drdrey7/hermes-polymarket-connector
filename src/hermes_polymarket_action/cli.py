@@ -174,20 +174,21 @@ def cancel(order_id, confirm_code):
 @main.command()
 @click.option("--token", "token_id", required=True, help="CLOB token ID (0x...)")
 @click.option("--size", type=float, required=True, help="Size to close in USD")
-@click.option("--confirm-code", help="Confirmation code from preview (optional)")
-def close(token_id, size, confirm_code):
-    """Close (reduce) a position."""
+@click.option("--confirm-code", required=True, help="Confirmation code from preview (required)")
+@click.option("--approve", is_flag=True, required=True, help="Explicit approval (required)")
+def close(token_id, size, confirm_code, approve):
+    """Close (reduce) a position. Requires confirmation code and approval."""
     if not config.is_live_enabled():
         console.print("[red]BLOCKED: Live trading disabled[/red]")
         return
-    
+
     if not config.live_trading:
         console.print("[yellow]DRY_RUN mode (LIVE_TRADING=false) — close not sent to network[/yellow]")
         return
-    
+
     console.print(f"Closing position for token {token_id[:12]}... (${size:.2f})")
-    result = execution_engine.close_position(token_id, size, confirm_code)
-    
+    result = execution_engine.close_position(token_id, size, confirm_code, approve)
+
     if result.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
         console.print(f"[green]CLOSE ORDER SUBMITTED: order_id={result.order_id}[/green]")
     else:
@@ -198,29 +199,33 @@ def close(token_id, size, confirm_code):
 def status():
     """Show account/CLOB status."""
     s = execution_engine.get_status()
-    
+
     table = Table(title="Account Status", show_header=True)
     table.add_column("Field", style="cyan")
     table.add_column("Value", style="white")
-    
+
     for k, v in s.items():
         table.add_row(k.replace("_", " ").title(), str(v))
-    
+
     console.print(table)
-    
-    # Show gates summary
+
+    # Show gates summary with actual geoblock check
     console.print("\n[bold]Safety Gates[/bold]")
     gates_table = Table(show_header=True)
     gates_table.add_column("Gate", style="cyan")
     gates_table.add_column("Status", style="white")
-    
+
+    from .geoblock import check_geoblock
+    geo = check_geoblock(config)
+
     gates = [
         ("LIVE_TRADING", config.live_trading),
         ("REQUIRE_CONFIRMATION", config.require_confirmation),
         ("Credentials", config.has_credentials()),
         ("Geoblock check", config.geoblock_check),
+        ("Geoblock actual", geo.allowed),
     ]
-    
+
     for name, passed in gates:
         gates_table.add_row(name, "[green]ON[/green]" if passed else "[red]OFF[/red]")
     console.print(gates_table)

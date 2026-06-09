@@ -36,7 +36,7 @@ def check_geoblock(config: Optional[ActionConfig] = None) -> GeoblockResult:
     
     try:
         resp = httpx.get(
-            f"{config.clob_api_url}/geoblock",
+            "https://polymarket.com/api/geoblock",
             timeout=5.0,
             headers={"Accept": "application/json"}
         )

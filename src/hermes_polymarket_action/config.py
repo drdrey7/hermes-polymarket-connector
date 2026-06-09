@@ -37,7 +37,7 @@ class ActionConfig(BaseSettings):
     max_position_usd: float = Field(default=1000.0, alias="MAX_POSITION_USD")
     max_open_orders: int = Field(default=50, alias="MAX_OPEN_ORDERS")
 
-    # Geoblock - uses official Polymarket endpoint at runtime
+    # Geoblock - uses official Polymarket endpoint at runtime (https://polymarket.com/api/geoblock)
     geoblock_check: bool = Field(default=True, alias="GEOBLOCK_CHECK")
 
     # Audit

@@ -33,6 +33,8 @@ class OrderRequest(BaseModel):
     price: float = Field(..., gt=0, lt=1, description="Limit price (0-1)")
     slippage_bps: int = Field(default=100, ge=0, le=10000, description="Max slippage in basis points")
     expire_seconds: int = Field(default=300, ge=30, description="Order expiry seconds")
+    # Optional: current position for proper position limit check
+    current_position_usd: float = Field(default=0.0, ge=0, description="Current position size in USD (for position limit check)")
 
     @field_validator("token_id")
     @classmethod

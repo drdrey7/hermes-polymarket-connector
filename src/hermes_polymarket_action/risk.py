@@ -68,7 +68,15 @@ class RiskEngine:
                 error=f"Slippage {req.slippage_bps}bps exceeds max {self.config.max_slippage_bps}bps",
             )
 
-        # Position limit (would need position tracking — placeholder)
+        # Position limit (blocking if current_position_usd provided)
+        if req.current_position_usd > 0:
+            new_position = req.current_position_usd + req.size_usd
+            if new_position > self.config.max_position_usd:
+                return RiskCheckResult(
+                    allowed=False,
+                    error=f"Position limit would be exceeded: ${new_position:.2f} > ${self.config.max_position_usd:.2f} (current: ${req.current_position_usd:.2f})"
+                )
+
         warnings = []
         if req.size_usd > self.config.max_position_usd * 0.5:
             warnings.append(f"Order size is >50% of max position limit (${self.config.max_position_usd})")

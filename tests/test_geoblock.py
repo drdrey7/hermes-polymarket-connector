@@ -45,7 +45,7 @@ def test_geoblock_allows_allowed_country():
     # Verify correct endpoint called
     assert mock_get.called
     args, kwargs = mock_get.call_args
-    assert args[0] == "https://clob.polymarket.com/geoblock"
+    assert args[0] == "https://polymarket.com/api/geoblock"
 
 
 def test_geoblock_denies_blocked_country():

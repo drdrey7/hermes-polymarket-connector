@@ -11,10 +11,9 @@ def test_validate_market_token_invalid_token_id():
     assert result.valid is False
 
 
-def test_validate_market_token_fallback_mode_ok():
-    # When get_market_for_token returns None, fallback accepts user input
+def test_validate_market_token_fail_closed_when_skill_unavailable():
+    # When get_market_for_token returns None (skill not integrated), validation fails closed
     result = validate_market_token("test-market", "0x" + "1" * 64, "Yes")
-    assert result.valid is True
-    assert result.market_slug == "test-market"
-    assert result.token_id == "0x" + "1" * 64
-    assert result.outcome == "Yes"
+    assert result.valid is False
+    assert "Market validation unavailable" in result.error
+    assert "Hermes Polymarket skill not integrated" in result.error
